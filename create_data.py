@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import numpy as np
 import os
@@ -25,7 +26,7 @@ from rdkit.Chem.BRICS import FindBRICSBonds  # 新增
 from utils import *
 
 
-def create(dataset_index):
+def create(dataset_index, fold_index=None, n_folds=5, seed=2024, split_mode="kfold", prepare_only=False):
     pro_res_table = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y',
                      'X']
 
@@ -435,15 +436,28 @@ def create(dataset_index):
     res_hydrophobic_ph2_table = dic_normalize(res_hydrophobic_ph2_table)
     res_hydrophobic_ph7_table = dic_normalize(res_hydrophobic_ph7_table)
 
+    split_suffix = "" if fold_index is None else f"_fold{fold_index}"
+
     # from DeepDTA data
     all_prots = []
     datasets = [['kiba', 'davis'][dataset_index]]
     for dataset in datasets:
         print('convert data from DeepDTA for ', dataset)
         fpath = 'data/' + dataset + '/'
-        train_fold = json.load(open(fpath + "folds/train_fold_setting1.txt"))
-        train_fold = [ee for e in train_fold for ee in e]
-        valid_fold = json.load(open(fpath + "folds/test_fold_setting1.txt"))
+        all_rows, all_cols = np.where(np.isnan(np.asarray(pickle.load(open(fpath + "Y", "rb"), encoding='latin1'))) == False)
+        if split_mode == "deepdta" or fold_index is None:
+            train_fold = json.load(open(fpath + "folds/train_fold_setting1.txt"))
+            train_fold = [ee for e in train_fold for ee in e]
+            valid_fold = json.load(open(fpath + "folds/test_fold_setting1.txt"))
+        else:
+            if fold_index < 0 or fold_index >= n_folds:
+                raise ValueError(f"fold_index must be in [0, {n_folds - 1}], got {fold_index}.")
+            indices = np.arange(len(all_rows))
+            rng = np.random.default_rng(seed)
+            rng.shuffle(indices)
+            folds = np.array_split(indices, n_folds)
+            valid_fold = folds[fold_index].tolist()
+            train_fold = np.concatenate([folds[i] for i in range(n_folds) if i != fold_index]).tolist()
         # 药物文件：pubchem号+smiles表达式
         ligands = json.load(open(fpath + "ligands_can.txt"), object_pairs_hook=OrderedDict)
         # 靶标文件：靶标名+序列表达式
@@ -470,7 +484,8 @@ def create(dataset_index):
                 rows, cols = rows[train_fold], cols[train_fold]
             elif opt == 'test':
                 rows, cols = rows[valid_fold], cols[valid_fold]
-            with open('data/' + dataset + '_' + opt + '.csv', 'w') as f:
+            csv_path = 'data/' + dataset + split_suffix + '_' + opt + '.csv'
+            with open(csv_path, 'w') as f:
                 f.write('compound_iso_smiles,target_sequence,target_name,affinity\n')
                 for pair_ind in range(len(rows)):
                     if not valid_target(target_key[cols[pair_ind]], dataset):  # ensure the contact and aln files exists
@@ -484,8 +499,12 @@ def create(dataset_index):
         print('\ndataset:', dataset)
         print('train_fold:', len(train_fold))
         print('test_fold:', len(valid_fold))
+        print('split csv suffix:', split_suffix if split_suffix else '(DeepDTA default)')
         print('len(set(drugs)),len(set(prots)):', len(set(drugs)), len(set(prots)))
         all_prots += list(set(prots))
+
+    if prepare_only:
+        return None
 
     seq_voc = "ABCDEFGHIKLMNOPQRSTUVWXYZ"
     seq_dict = {v: (i + 1) for i, v in enumerate(seq_voc)}
@@ -514,7 +533,7 @@ def create(dataset_index):
 
         opts = ['train', 'test']
         for opt in opts:
-            df = pd.read_csv('data/' + dt_name + '_' + opt + '.csv')
+            df = pd.read_csv('data/' + dt_name + split_suffix + '_' + opt + '.csv')
             compound_iso_smiles += list(df['compound_iso_smiles'])
             target_name_key += list(df['target_name'])
     compound_iso_smiles = set(compound_iso_smiles)
@@ -545,7 +564,7 @@ def create(dataset_index):
             g = target_to_graph(key, proteins[key], contac_path, msa_path)
             target_graph[key] = g
 
-        df = pd.read_csv('data/' + dataset + '_train.csv')
+        df = pd.read_csv('data/' + dataset + split_suffix + '_train.csv')
         train_drugs, train_prots, train_Y = list(df['compound_iso_smiles']), list(df['target_sequence']), list(
             df['affinity'])
         train_target_key = list(df['target_name'])
@@ -555,7 +574,7 @@ def create(dataset_index):
         train_drugs, train_prots, train_Y = np.asarray(train_drugs), np.asarray(XT), np.asarray(train_Y)
         train_drugs_smi = np.asarray(drug_smiles_label)
 
-        df = pd.read_csv('data/' + dataset + '_test.csv')
+        df = pd.read_csv('data/' + dataset + split_suffix + '_test.csv')
         test_drugs, test_prots, test_Y = list(df['compound_iso_smiles']), list(df['target_sequence']), list(
             df['affinity'])
         test_target_key = list(df['target_name'])
@@ -566,12 +585,12 @@ def create(dataset_index):
         test_drugs_smi = np.asarray(drug_smiles_label)
 
         # make data PyTorch Geometric ready
-        print('preparing ', dataset + '_train.pt in pytorch format!')
-        train_data = TestbedDataset(root='data', dataset=dataset + '_train', xd=train_drugs, smi=train_drugs_smi,
+        print('preparing ', dataset + split_suffix + '_train.pt in pytorch format!')
+        train_data = TestbedDataset(root='data', dataset=dataset + split_suffix + '_train', xd=train_drugs, smi=train_drugs_smi,
                                     xt=train_prots, y=train_Y, smile_graph=smile_graph,
                                     target_graph=target_graph, target_key=train_target_key)
-        print('preparing ', dataset + '_test.pt in pytorch format!')
-        test_data = TestbedDataset(root='data', dataset=dataset + '_test', xd=test_drugs, smi=test_drugs_smi,
+        print('preparing ', dataset + split_suffix + '_test.pt in pytorch format!')
+        test_data = TestbedDataset(root='data', dataset=dataset + split_suffix + '_test', xd=test_drugs, smi=test_drugs_smi,
                                    xt=test_prots, y=test_Y, smile_graph=smile_graph,
                                    target_graph=target_graph, target_key=test_target_key)
 
@@ -579,3 +598,21 @@ def create(dataset_index):
         return train_data, test_data
         # else:
         #     print(processed_data_file_train, ' and ', processed_data_file_test, ' are already created')
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Create train/test CSV files for five-fold DTA experiments.")
+    parser.add_argument("--dataset", choices=["kiba", "davis"], required=True)
+    parser.add_argument("--fold", type=int, default=None, help="Fold index, from 0 to n_folds-1.")
+    parser.add_argument("--n-folds", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=2024)
+    parser.add_argument("--all-folds", action="store_true", help="Generate CSV files for all folds.")
+    parser.add_argument("--split-mode", choices=["kfold", "deepdta"], default="kfold")
+    args = parser.parse_args()
+
+    dataset_index = {"kiba": 0, "davis": 1}[args.dataset]
+    if args.all_folds:
+        for fold in range(args.n_folds):
+            create(dataset_index, fold_index=fold, n_folds=args.n_folds, seed=args.seed, split_mode=args.split_mode, prepare_only=True)
+    else:
+        create(dataset_index, fold_index=args.fold, n_folds=args.n_folds, seed=args.seed, split_mode=args.split_mode, prepare_only=True)
