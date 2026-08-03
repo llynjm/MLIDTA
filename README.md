@@ -7,7 +7,7 @@ utils.py: include TestbedDataset used by create_data.py to create data, and perf
 training.py: train the FMDTA model.
 
 models1： model file.
-# Requirements
+# Environment Configuration and Version Dependencies
 The experimental runtime environment is as follows: the operating system is Linux; the programming language is Python==3.9.21; the deep learning framework is PyTorch 2.1.2; graph neural network operations are implemented using PyTorch Geometric 2.6.1; RDKit is used for molecular graph construction and SMILES parsing; and NumPy, Pandas, and SciPy are used for numerical computations and data processing, respectively. Model training is performed on a CUDA-enabled NVIDIA GPU using CUDA version 11.8. The main dependencies are as follows:
 	Python==3.9.21
 	numpy==1.26
